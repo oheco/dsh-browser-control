@@ -1,0 +1,12 @@
+{
+  "name": "@oheco/dsh-browser-control",
+  "version": "0.1.0",
+  "description": "Control HarmonyOS PC Browser through an automatically reconnecting Chrome extension.",
+  "type": "module",
+  "license": "MIT",
+  "exports": { ".": "./plugin.js", "./package.json": "./package.json", "./locale/*.json": "./locale/*.json" },
+  "files": ["plugin.js", "server.js", "operations.js", "extension", "scripts", "test/fixtures", "tpr", "locale", "cordis.patch.yml", "README.md", "VERIFICATION.md", "LICENSE", "THIRD_PARTY.md"],
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "scripts": { "check": "node scripts/check.mjs", "test": "node --test test/*.test.js", "serve": "node scripts/serve.mjs", "setup": "node scripts/setup.mjs" },
+  "engines": { "node": ">=22" }
+}

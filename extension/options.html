@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>DSH 浏览器控制设置</title><link rel="stylesheet" href="options.css"></head>
+<body><main><h1>DSH 浏览器控制</h1><p>保存一次配置后，浏览器启动时自动连接，断线后自动重试。所有普通标签页均可由 dsh 操作。</p>
+<form id="settings"><label for="endpoint">本机连接地址</label><input id="endpoint" type="text" value="ws://127.0.0.1:9227/browser" required spellcheck="false"><label for="token">连接令牌</label><input id="token" type="password" required autocomplete="off" spellcheck="false" placeholder="从 dsh 插件 setup 命令获取"><label class="check"><input id="enabled" type="checkbox" checked> 浏览器启动后自动连接</label><button type="submit">保存并自动连接</button></form>
+<p id="message" role="status" aria-live="polite"></p><section><h2>连接状态</h2><pre id="status">正在读取…</pre></section><p class="note">dsh 尚未启动时显示等待状态。无需为每个页面点击连接。浏览器内部设置页和隐私窗口不受控制。</p></main><script src="options.js" type="module"></script></body></html>

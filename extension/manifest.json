@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "DSH 浏览器控制",
+  "version": "0.1.0",
+  "description": "浏览器启动后自动连接本机 dsh，提供标签页控制、网页操作、截图和网页测试。",
+  "minimum_chrome_version": "116",
+  "permissions": ["tabs", "debugger", "storage", "alarms"],
+  "host_permissions": ["http://*/*", "https://*/*", "file:///*"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_title": "DSH 浏览器控制" },
+  "options_ui": { "page": "options.html", "open_in_tab": true },
+  "incognito": "not_allowed",
+  "content_security_policy": { "extension_pages": "script-src 'self'; object-src 'self'; connect-src ws://127.0.0.1:* http://127.0.0.1:*" }
+}

@@ -1,0 +1,4 @@
+- insert:
+    - id: oheco-browser-control
+      name: './plugin.js'
+      config: {}
