@@ -24,14 +24,90 @@ function allowedUrl(url) {
   if (!['http:', 'https:', 'file:'].includes(parsed.protocol)) throw new ControlError('UNSUPPORTED_URL', 'Only http, https, file and about:blank pages are controllable.');
   return parsed.href;
 }
+export const DEBUGGER_IDLE_MS = 30000;
 export class BrowserController {
-  constructor(chrome) {
-    this.chrome = chrome; this.attached = new Map(); this.contexts = new Map(); this.logs = new Map(); this.signals = new Map();
+  constructor(chrome, { idleMs = DEBUGGER_IDLE_MS, timers = globalThis, now = () => Date.now() } = {}) {
+    Object.assign(this, { chrome, idleMs, timers, now });
+    this.attached = new Map(); this.contexts = new Map(); this.logs = new Map(); this.signals = new Map();
+    this.usage = new Map(); this.detaching = new Map(); this.lastRelease = null;
     chrome.debugger?.onEvent.addListener((source, method, params) => this.event(source, method, params));
-    chrome.debugger?.onDetach.addListener(source => { this.attached.delete(source.tabId); this.contexts.delete(source.tabId); });
-    chrome.tabs.onRemoved.addListener(tabId => { this.attached.delete(tabId); this.contexts.delete(tabId); this.logs.delete(tabId); });
+    chrome.debugger?.onDetach.addListener(source => this.forget(source.tabId));
+    chrome.tabs.onRemoved.addListener(tabId => { this.forget(tabId); this.logs.delete(tabId); });
   }
   call(owner, method, ...args) { return callChrome(this.chrome, owner, method, ...args); }
+  forget(tabId) {
+    this.attached.delete(tabId); this.contexts.delete(tabId);
+    const entry = this.usage.get(tabId); this.timers.clearTimeout(entry?.timer);
+    if (entry && entry.active === 0) this.usage.delete(tabId);
+  }
+  beginUse(tabId) {
+    let entry = this.usage.get(tabId);
+    if (!entry) { entry = { active: 0, lastUsed: this.now(), timer: null, releaseRequested: false }; this.usage.set(tabId, entry); }
+    this.timers.clearTimeout(entry.timer); entry.timer = null; entry.active++;
+    return entry;
+  }
+  armIdle(tabId, entry) {
+    this.timers.clearTimeout(entry.timer);
+    if (entry.active || !this.attached.has(tabId)) return;
+    entry.timer = this.timers.setTimeout(() => { this.detachTab(tabId, 'idle').catch(() => {}); }, this.idleMs);
+    entry.timer?.unref?.();
+  }
+  async endUse(tabId, entry) {
+    entry.active--; entry.lastUsed = this.now();
+    if (entry.active) return;
+    if (entry.releaseRequested) await this.detachTab(tabId, 'disconnected');
+    else if (this.attached.has(tabId)) this.armIdle(tabId, entry);
+    else this.usage.delete(tabId);
+  }
+  detachTab(tabId, reason = 'idle') {
+    if (this.detaching.has(tabId)) return this.detaching.get(tabId);
+    const entry = this.usage.get(tabId);
+    if (entry?.active) { if (reason === 'disconnected') entry.releaseRequested = true; return Promise.resolve(false); }
+    this.timers.clearTimeout(entry?.timer);
+    if (!this.attached.has(tabId)) { this.forget(tabId); return Promise.resolve(false); }
+    const work = (async () => {
+      await this.attached.get(tabId).catch(() => {});
+      // A request that arrived before native detach started can keep using this attachment.
+      if (this.usage.get(tabId)?.active) return false;
+      try {
+        await this.call(this.chrome.debugger, 'detach', { tabId });
+        this.forget(tabId); this.lastRelease = { tabId, reason, at: new Date(this.now()).toISOString() }; return true;
+      } catch (error) {
+        // Retain ownership until detach is confirmed; alarms retry a failed release.
+        this.lastRelease = { tabId, reason, error: error.message, at: new Date(this.now()).toISOString() };
+        const current = this.usage.get(tabId); if (current) this.armIdle(tabId, current);
+        throw error;
+      }
+    })().finally(() => { if (this.detaching.get(tabId) === work) this.detaching.delete(tabId); });
+    this.detaching.set(tabId, work); return work;
+  }
+  async releaseAll() {
+    const ids = new Set([...this.attached.keys(), ...this.usage.keys()]);
+    for (const id of ids) { const entry = this.usage.get(id); if (entry) entry.releaseRequested = true; }
+    await Promise.allSettled(Array.from(ids, id => this.detachTab(id, 'disconnected')));
+  }
+  async releaseOrphans() {
+    if (!this.chrome.debugger?.getTargets) return;
+    const targets = await this.call(this.chrome.debugger, 'getTargets');
+    for (const target of targets) {
+      if (!target.attached || target.tabId === undefined) continue;
+      // Chrome allows detach only for this extension's own debugger sessions.
+      try { await this.call(this.chrome.debugger, 'detach', { tabId: target.tabId }); this.forget(target.tabId); } catch {}
+    }
+  }
+  async sweepIdle() {
+    await Promise.allSettled(Array.from(this.usage, ([id, entry]) => {
+      if (!entry.active && (entry.releaseRequested || this.now() - entry.lastUsed >= this.idleMs)) return this.detachTab(id, entry.releaseRequested ? 'disconnected' : 'idle');
+    }));
+  }
+  async debuggingState() {
+    const value = { idleTimeoutMs: this.idleMs, attachedTabIds: [...this.attached.keys()], busyTabIds: Array.from(this.usage).filter(([, e]) => e.active).map(([id]) => id), releasingTabIds: [...this.detaching.keys()], lastRelease: this.lastRelease };
+    if (this.chrome.debugger?.getTargets) {
+      try { value.targets = (await this.call(this.chrome.debugger, 'getTargets')).filter(t => t.tabId !== undefined).map(t => ({ tabId: t.tabId, attached: !!t.attached })); }
+      catch (error) { value.queryError = error.message; }
+    }
+    return value;
+  }
   async cdp(tabId, method, params = {}) {
     this.signals.get(tabId)?.throwIfAborted();
     try { return await this.call(this.chrome.debugger, 'sendCommand', { tabId }, method, params); }
@@ -59,6 +135,7 @@ export class BrowserController {
     if (entry) { const list = this.logs.get(id) || []; list.push({ time: new Date().toISOString(), ...entry }); if (list.length > 500) list.shift(); this.logs.set(id, list); }
   }
   async attach(tabId) {
+    await this.detaching.get(tabId);
     const tab = await this.call(this.chrome.tabs, 'get', tabId); allowedUrl(tab.url || 'about:blank');
     if (!this.chrome.debugger) throw new ControlError('DEBUGGER_UNAVAILABLE', 'This browser does not expose chrome.debugger; reliable page control is unavailable.');
     if (!this.attached.has(tabId)) {
@@ -165,30 +242,36 @@ export class BrowserController {
     return { tabId, action };
   }
   async execute(method, args, signal) {
+    const lease = args.tabId !== undefined && method !== 'browser_tabs' && method !== 'browser_logs' ? this.beginUse(args.tabId) : null;
     if (args.tabId !== undefined) this.signals.set(args.tabId, signal);
     try { return await this.executeCommand(method, args, signal); }
-    finally { if (args.tabId !== undefined) this.signals.delete(args.tabId); }
+    finally {
+      if (args.tabId !== undefined) this.signals.delete(args.tabId);
+      if (lease) await this.endUse(args.tabId, lease);
+    }
   }
   async executeCommand(method, args, signal) {
     signal?.throwIfAborted();
     if (method === 'browser_open') {
       const url = allowedUrl(args.url || 'about:blank');
       const tab = await this.call(this.chrome.tabs, 'create', { url: 'about:blank', active: args.active ?? true, ...(args.windowId === undefined ? {} : { windowId: args.windowId }) });
-      this.signals.set(tab.id, signal);
+      signal?.throwIfAborted();
+      const lease = this.beginUse(tab.id); this.signals.set(tab.id, signal);
       try {
         await this.attach(tab.id);
         if (url !== 'about:blank') { const result = await this.cdp(tab.id, 'Page.navigate', { url }); if (result.errorText) throw new ControlError('NAVIGATION_FAILED', result.errorText); }
         return { ...serialTab(await this.call(this.chrome.tabs, 'get', tab.id)), url };
       } catch (error) { error.message = `${error.message} (new tab ${tab.id} remains available for inspection)`; throw error; }
-      finally { this.signals.delete(tab.id); }
+      finally { this.signals.delete(tab.id); await this.endUse(tab.id, lease); }
     }
     if (method === 'browser_tabs') {
-      if (args.action === 'list') return { tabs: (await this.call(this.chrome.tabs, 'query', {})).filter(t => !t.incognito).map(serialTab) };
+      if (args.action === 'list') return { tabs: (await this.call(this.chrome.tabs, 'query', {})).filter(t => !t.incognito).map(serialTab), debugging: await this.debuggingState() };
       if (args.action === 'close') { await this.call(this.chrome.tabs, 'remove', args.tabId); return { closed: args.tabId }; }
       if (args.action === 'activate') { const tab = await this.call(this.chrome.tabs, 'update', args.tabId, { active: true }); await this.call(this.chrome.windows, 'update', tab.windowId, { focused: true }); return serialTab(tab); }
       if (args.action === 'duplicate') return serialTab(await this.call(this.chrome.tabs, 'duplicate', args.tabId));
       throw new ControlError('INVALID_ACTION', 'Unsupported tab action.');
     }
+    if (method === 'browser_logs') { const tab = await this.call(this.chrome.tabs, 'get', args.tabId); if (tab.incognito) throw new ControlError('UNSUPPORTED_TAB', 'Private windows are not controlled.'); const entries = (this.logs.get(args.tabId) || []).slice(-Math.min(Math.max(args.limit ?? 100, 1), 500)); if (args.clear) this.logs.set(args.tabId, []); return { tabId: args.tabId, entries }; }
     await this.attach(args.tabId); signal?.throwIfAborted();
     if (method === 'browser_navigate') {
       if (args.action === 'goto') { const result = await this.cdp(args.tabId, 'Page.navigate', { url: allowedUrl(args.url) }); if (result.errorText) throw new ControlError('NAVIGATION_FAILED', result.errorText); }
@@ -209,7 +292,6 @@ export class BrowserController {
     }
     if (method === 'browser_action') return this.action(args, signal);
     if (method === 'browser_evaluate') return { tabId: args.tabId, value: await this.evaluate(args.tabId, args.expression, args.frameId) };
-    if (method === 'browser_logs') { const entries = (this.logs.get(args.tabId) || []).slice(-Math.min(Math.max(args.limit ?? 100, 1), 500)); if (args.clear) this.logs.set(args.tabId, []); return { tabId: args.tabId, entries }; }
     if (method === 'browser_wait') {
       const end = Date.now() + Math.min(Math.max(args.timeoutMs ?? 10000, 1), 120000);
       do {

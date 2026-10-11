@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 const run = promisify(execFile);
 const source = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+if (!process.env.XDG_CACHE_HOME) throw new Error('XDG_CACHE_HOME is required.');
 const cache = path.join(process.env.XDG_CACHE_HOME, 'dsh-browser-control', 'artifacts');
 const manifest = JSON.parse(await readFile(path.join(source, 'package.json'), 'utf8'));
 const inputs = ['package.json', ...manifest.files], entries = [];
@@ -17,19 +18,16 @@ async function inventory(relative) {
 for (const input of inputs) await inventory(input);
 entries.sort((a, b) => a.relative.localeCompare(b.relative));
 const hasher = createHash('sha256'); for (const { relative, data } of entries) hasher.update(relative + '\0').update(data);
-const digest = hasher.digest('hex');
-const directory = path.join(cache, digest.slice(0, 16)), staged = path.join(directory, 'package');
+const digest = hasher.digest('hex'), directory = path.join(cache, digest.slice(0, 16));
+const folder = `dsh-browser-control-${manifest.version}`, staged = path.join(directory, folder);
 await mkdir(staged, { recursive: true, mode: 0o700 });
 for (const input of inputs) await cp(path.join(source, input), path.join(staged, input), { recursive: true, force: true });
-// Stage under an immutable source digest. Native module identities are fresh when reactivating this version.
 await run(process.execPath, ['scripts/check.mjs'], { cwd: staged });
-const npm = await run('npm', ['pack', '--offline', '--pack-destination', directory], { cwd: staged, maxBuffer: 2000000 });
-const tgz = path.join(directory, npm.stdout.trim().split('\n').at(-1));
-const zip = path.join(directory, `dsh-browser-control-extension-${manifest.version}.zip`);
-await run('python3', ['-c', 'import pathlib,sys,zipfile\nroot=pathlib.Path(sys.argv[1])\nwith zipfile.ZipFile(sys.argv[2],"w",zipfile.ZIP_DEFLATED) as z:\n for p in sorted(root.rglob("*")):\n  if p.is_file():\n   info=zipfile.ZipInfo(p.relative_to(root).as_posix(),(2026,1,1,0,0,0));info.compress_type=zipfile.ZIP_DEFLATED;info.external_attr=0o644<<16;z.writestr(info,p.read_bytes())', path.join(staged, 'extension'), zip]);
-const outputs = [];
-for (const file of [tgz, zip]) { const data = await readFile(file); outputs.push({ path: file, size: data.length, sha256: createHash('sha256').update(data).digest('hex') }); }
-await writeFile(path.join(directory, 'SHA256SUMS'), outputs.map(x => `${x.sha256}  ${path.basename(x.path)}`).join('\n') + '\n');
-const result = { version: manifest.version, sourceSha256: digest, staged, outputs };
+await writeFile(path.join(staged, 'SOURCE-MANIFEST.json'), JSON.stringify({ version: manifest.version, sourceSha256: digest, files: entries.map(({ relative, data }) => ({ path: relative, sha256: createHash('sha256').update(data).digest('hex') })) }, null, 2) + '\n');
+const zip = path.join(directory, `${folder}.zip`);
+await run('python3', ['-c', 'import pathlib,sys,zipfile\nroot=pathlib.Path(sys.argv[1]);prefix=sys.argv[2]\nwith zipfile.ZipFile(sys.argv[3],"w",zipfile.ZIP_DEFLATED) as z:\n for p in sorted(root.rglob("*")):\n  if p.is_file():\n   info=zipfile.ZipInfo(prefix+"/"+p.relative_to(root).as_posix(),(2026,1,1,0,0,0));info.compress_type=zipfile.ZIP_DEFLATED;info.external_attr=0o644<<16;z.writestr(info,p.read_bytes())', staged, folder, zip]);
+const data = await readFile(zip), output = { path: zip, size: data.length, sha256: createHash('sha256').update(data).digest('hex') };
+await writeFile(path.join(directory, 'SHA256SUMS'), `${output.sha256}  ${path.basename(zip)}\n`);
+const result = { version: manifest.version, sourceSha256: digest, staged, outputs: [output] };
 await writeFile(path.join(cache, 'latest-build.json'), JSON.stringify(result, null, 2) + '\n');
 console.log(JSON.stringify(result, null, 2));

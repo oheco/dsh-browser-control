@@ -14,6 +14,7 @@ export class AutoConnection {
   }
   call(owner, method, ...args) { return callChrome(this.chrome, owner, method, ...args); }
   async initialize() {
+    try { await this.controller.releaseOrphans?.(); } catch {}
     const saved = await this.call(this.chrome.storage.local, 'get', ['connection']);
     this.config = { ...this.config, ...saved.connection };
     await this.ensureAlarm(); this.connect();
@@ -49,13 +50,14 @@ export class AutoConnection {
       this.timers.clearInterval(this.heartbeat); this.socket = null; this.ready = false;
       for (const { abort } of this.running.values()) abort.abort();
       this.running.clear();
+      this.releaseDebugging();
       this.state('reconnecting', '等待 dsh；后台会自动重试');
       const delay = this.retryDelay; this.retryDelay = Math.min(this.retryDelay * 2, 30000);
       this.retryTimer = this.timers.setTimeout(() => this.connect(), delay);
     };
     ws.addEventListener('open', () => {
       if (this.socket !== ws) return;
-      const capabilities = ['tabs', 'autoReconnect'];
+      const capabilities = ['tabs', 'autoReconnect', 'autoDetach'];
       if (this.chrome.debugger?.attach && this.chrome.debugger?.sendCommand) capabilities.push('debugger', 'snapshot', 'input', 'screenshot', 'console', 'network');
       ws.send(JSON.stringify({ type: 'hello', protocol: 1, token: this.config.token, browser: { extensionVersion: this.chrome.runtime.getManifest().version, userAgent: globalThis.navigator?.userAgent || '', capabilities } }));
     });
@@ -96,10 +98,12 @@ export class AutoConnection {
     await this.call(this.chrome.storage.local, 'set', { connection: this.config });
     this.disconnect(); await this.ensureAlarm(); this.connect();
   }
+  releaseDebugging() { try { Promise.resolve(this.controller.releaseAll?.()).catch(() => {}); } catch {} }
   disconnect() {
     this.generation++; this.timers.clearTimeout(this.retryTimer); this.timers.clearInterval(this.heartbeat);
     const ws = this.socket; this.socket = null; this.ready = false;
     for (const { abort } of this.running.values()) abort.abort(); this.running.clear();
+    this.releaseDebugging();
     if (ws) ws.close();
   }
 }

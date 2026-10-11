@@ -15,6 +15,13 @@ export function toolDefinition(spec, execute) {
     async execute(args, exec) { return execute(spec.name, args, exec.signal); },
   };
 }
+export function pairingHandler(connection, bridge) {
+  return async endpoint => {
+    if (endpoint === 'status') return { ok: true, value: bridge.status() };
+    if (endpoint === 'pairing') return { ok: true, value: { endpoint: connection.endpoint, token: connection.token } };
+    return { ok: false, error: { code: 'NOT_FOUND', message: 'Unknown browser-control UI endpoint.', details: {} } };
+  };
+}
 export async function apply(ctx, config = {}) {
   if (config.port !== undefined && (!Number.isInteger(config.port) || config.port < 1 || config.port > 65535)) throw new BrowserError('INVALID_CONFIG', 'port must be an integer between 1 and 65535.');
   if (config.extensionId !== undefined && !/^[a-p]{32}$/.test(config.extensionId)) throw new BrowserError('INVALID_CONFIG', 'extensionId must be a Chrome extension ID.');
@@ -24,6 +31,13 @@ export async function apply(ctx, config = {}) {
   bridge.rpc = localExecute;
   await bridge.start();
   ctx.effect(() => () => bridge.close());
+  ctx.inject(['connection'], uiCtx => {
+    const handler = pairingHandler(connection, bridge);
+    for (const endpoint of ['status', 'pairing']) uiCtx.connection.fetch.register({
+      path: `/api/oheco-browser-control/${endpoint}`, methods: ['POST'], requestBody: 'buffered',
+      async fetch() { return Response.json(await handler(endpoint), { headers: { 'Cache-Control': 'no-store' } }); },
+    });
+  });
   const attached = new Map();
   const attach = agent => {
     if (attached.has(agent)) return;

@@ -1,12 +1,17 @@
 {
   "name": "@oheco/dsh-browser-control",
-  "version": "0.1.0",
-  "description": "Control HarmonyOS PC Browser through an automatically reconnecting Chrome extension.",
+  "version": "0.1.1",
+  "description": "HarmonyOS browser control with automatic connection, idle debugger release and GUI pairing.",
   "type": "module",
   "license": "MIT",
-  "exports": { ".": "./plugin.js", "./package.json": "./package.json", "./locale/*.json": "./locale/*.json" },
-  "files": ["plugin.js", "server.js", "operations.js", "extension", "scripts", "test/fixtures", "tpr", "locale", "cordis.patch.yml", "README.md", "VERIFICATION.md", "LICENSE", "THIRD_PARTY.md"],
-  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
-  "scripts": { "check": "node scripts/check.mjs", "test": "node --test test/*.test.js", "serve": "node scripts/serve.mjs", "setup": "node scripts/setup.mjs" },
+  "repository": { "type": "git", "url": "https://github.com/oheco/dsh-browser-control.git" },
+  "homepage": "https://github.com/oheco/dsh-browser-control",
+  "exports": { ".": "./main.js", "./client": "./client.mjs", "./package.json": "./package.json", "./locale/*.json": "./locale/*.json" },
+  "files": ["main.js", "client.mjs", "server.js", "operations.js", "extension", "scripts", "test", "tpr", "locale", "cordis.patch.yml", "README.md", "VERIFICATION.md", "LICENSE", "THIRD_PARTY.md"],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": { "platform": "web", "immediately": true, "inject": ["@deepseek-ai/dsh-client-ui-plugin-manager", "@deepseek-ai/dsh-client-connection", "@deepseek-ai/dsh-client-locale"] }
+  },
+  "scripts": { "check": "node scripts/check.mjs", "test": "node --test test/*.test.js", "serve": "node scripts/serve.mjs", "setup": "node scripts/setup.mjs", "package": "node scripts/package.mjs" },
   "engines": { "node": ">=22" }
 }

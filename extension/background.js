@@ -1,11 +1,12 @@
 import { BrowserController } from './controller.js';
 import { AutoConnection, RETRY_ALARM } from './connection.js';
 
-const connection = new AutoConnection({ chrome, controller: new BrowserController(chrome) });
+const controller = new BrowserController(chrome);
+const connection = new AutoConnection({ chrome, controller });
 // Register listeners synchronously so Chrome can wake a dormant service worker.
 chrome.runtime.onStartup.addListener(() => connection.ensureAlarm().then(() => connection.connect()));
 chrome.runtime.onInstalled.addListener(() => connection.ensureAlarm().then(() => connection.connect()));
-chrome.alarms.onAlarm.addListener(alarm => { if (alarm.name === RETRY_ALARM) connection.connect(); });
+chrome.alarms.onAlarm.addListener(alarm => { if (alarm.name === RETRY_ALARM) { controller.sweepIdle().catch(() => {}); connection.connect(); } });
 chrome.action.onClicked.addListener(() => chrome.runtime.openOptionsPage());
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (sender.id !== chrome.runtime.id || sender.tab?.url && !sender.tab.url.startsWith(chrome.runtime.getURL(''))) return;
